@@ -20,6 +20,8 @@ import streamlit as st
 import mlb_engine as E
 import projections as P
 import odds_api as O
+import statcast_data as SC
+import weather as WX
 
 st.set_page_config(page_title="Edge Board", page_icon="📈", layout="wide")
 st.title("📈 Edge Board")
@@ -42,10 +44,33 @@ def get_api_key():
         return os.environ.get("ODDS_API_KEY")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_statcast():
+    return SC.load()  # (lookup, k); ({}, None) if no cache file
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_weather(meta_keys: tuple):
+    out = {}
+    for vid, gdate in meta_keys:
+        if vid is not None and vid not in out:
+            try:
+                out[vid] = WX.get_game_weather(vid, gdate)
+            except Exception:
+                out[vid] = None
+    return out
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_index(date_str: str, fip_constant: float, sims: int, seed: int):
     rows, meta = E.build_slate(date_str, fip_constant)
-    return P.build_projection_index(rows, meta, sims=sims, seed=seed)
+    sc, k = load_statcast()
+    wx = load_weather(tuple((m.get("venue_id"), m.get("game_date")) for m in meta))
+    for r in rows:
+        w = wx.get(r.get("_venue_id"))
+        r["_weather_hr"] = w["hr_factor"] if w else 1.0   # temp + wind on HR, matches Dinger Engine
+    # Statcast + weather attached -> HR probabilities here are consistent with the Dinger Engine.
+    return P.build_projection_index(rows, meta, sims=sims, seed=seed, statcast=sc, statcast_k=k)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
