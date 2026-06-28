@@ -12,6 +12,7 @@ import pandas as pd
 import mlb_engine as E
 import projections as P
 import statcast_data as SC
+import weather as WX
 from datetime import datetime
 import pytz
 
@@ -25,12 +26,29 @@ def load_statcast():
     return SC.load()  # (lookup_by_player_id, calibration_k); ({}, None) if no cache file
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_weather(meta_keys: tuple):
+    """meta_keys: tuple of (venue_id, game_date). Returns {venue_id: weather|None}."""
+    out = {}
+    for vid, gdate in meta_keys:
+        if vid is not None and vid not in out:
+            try:
+                out[vid] = WX.get_game_weather(vid, gdate)
+            except Exception:
+                out[vid] = None
+    return out
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_slate(date_str: str, fip_constant: float):
     rows, meta = E.build_slate(date_str, fip_constant)
     sc, k = load_statcast()
-    P.enrich_hitter_rows(rows, seed=7, statcast=sc, statcast_k=k)  # matchup/platoon/Statcast
-    return rows, meta, (len(sc) if sc else 0)
+    wx_by_venue = load_weather(tuple((m.get("venue_id"), m.get("game_date")) for m in meta))
+    for r in rows:
+        wx = wx_by_venue.get(r.get("_venue_id"))
+        r["_weather_hr"] = wx["hr_factor"] if wx else 1.0
+    P.enrich_hitter_rows(rows, seed=7, statcast=sc, statcast_k=k)  # matchup/platoon/Statcast/weather
+    return rows, meta, (len(sc) if sc else 0), wx_by_venue
 
 
 eastern = pytz.timezone("US/Eastern")
@@ -50,7 +68,7 @@ with c3:
 date_str = target_date.strftime("%Y-%m-%d")
 
 with st.spinner("Compiling telemetry..."):
-    rows, meta, n_statcast = load_slate(date_str, fip_constant)
+    rows, meta, n_statcast, wx_by_venue = load_slate(date_str, fip_constant)
 
 if not rows:
     st.info("No hitters compiled for this date. Pick a date with scheduled MLB games.")
@@ -151,6 +169,16 @@ for m in meta_sorted:
     when = game_time_et(m.get("game_date"))
     badge = "" if (df[df["GameLabel"].str.startswith(m["label"].split(" (Game")[0])]["Lineup"] == "Confirmed").any() else " · projected lineups"
     with st.expander(f"🕒 {when}  ·  {m['label']}  —  {m['venue']}  ({m['status']}){badge}"):
+        wx = wx_by_venue.get(m.get("venue_id"))
+        if wx:
+            if wx.get("dome"):
+                st.markdown("🏟️ **Indoors** (fixed roof) — weather neutral")
+            else:
+                f = wx["hr_factor"]
+                tag = f"🟢 +{(f - 1) * 100:.0f}% HR" if f > 1.02 else (
+                    f"🔴 {(f - 1) * 100:.0f}% HR" if f < 0.98 else "⚪ neutral")
+                approx = " · _wind orientation approximate_" if wx.get("approx_wind") else ""
+                st.markdown(f"🌤️ **{wx['summary']}** → {tag}{approx}")
         st.markdown(
             f"✈️ **{m['away_name']}** SP {ap.name}: K/9 {ap.k9:.1f} · ERA {ap.era:.2f} · "
             f"FIP {ap.fip:.2f} · WHIP {ap.whip:.2f}"
