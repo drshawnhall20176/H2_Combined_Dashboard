@@ -20,7 +20,9 @@ can't blow up a projection. venue_ids should also be verified against a live sla
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from datetime import datetime
 from typing import Callable, Dict, Optional
 
@@ -35,37 +37,73 @@ WIND_COEF = 0.010      # +1.0% HR per mph of wind blowing OUT to center
 HR_FACTOR_MIN, HR_FACTOR_MAX = 0.75, 1.30
 
 # venue_id -> stadium. roof: "open" | "fixed" (always covered) | "retractable" (uncertain).
-# cf_bearing = degrees (0=N, 90=E) from home plate toward center field. VERIFY these.
-STADIUMS: Dict[int, Dict] = {
-    1:    dict(name="Angel Stadium",        lat=33.800, lon=-117.883, roof="open",        cf_bearing=45),
-    2:    dict(name="Chase Field",          lat=33.445, lon=-112.067, roof="retractable", cf_bearing=0),
-    3:    dict(name="Oriole Park",          lat=39.284, lon=-76.622,  roof="open",        cf_bearing=30),
-    4:    dict(name="Fenway Park",          lat=42.346, lon=-71.097,  roof="open",        cf_bearing=45),
-    5:    dict(name="Wrigley Field",        lat=41.948, lon=-87.656,  roof="open",        cf_bearing=30),
-    7:    dict(name="Rate Field",           lat=41.830, lon=-87.634,  roof="open",        cf_bearing=125),
-    8:    dict(name="Great American Ball Park", lat=39.097, lon=-84.507, roof="open",     cf_bearing=100),
-    10:   dict(name="Progressive Field",    lat=41.496, lon=-81.685,  roof="open",        cf_bearing=0),
-    12:   dict(name="Coors Field",          lat=39.756, lon=-104.994, roof="open",        cf_bearing=0),
-    14:   dict(name="Comerica Park",        lat=42.339, lon=-83.049,  roof="open",        cf_bearing=150),
-    15:   dict(name="Daikin Park",          lat=29.757, lon=-95.355,  roof="retractable", cf_bearing=345),
-    17:   dict(name="Kauffman Stadium",     lat=39.051, lon=-94.480,  roof="open",        cf_bearing=60),
-    19:   dict(name="Dodger Stadium",       lat=34.074, lon=-118.240, roof="open",        cf_bearing=25),
-    22:   dict(name="loanDepot park",       lat=25.778, lon=-80.220,  roof="retractable", cf_bearing=40),
-    2392: dict(name="Target Field",         lat=44.982, lon=-93.278,  roof="open",        cf_bearing=90),
-    2395: dict(name="Citizens Bank Park",   lat=39.906, lon=-75.166,  roof="open",        cf_bearing=0),
-    2602: dict(name="Yankee Stadium",       lat=40.829, lon=-73.926,  roof="open",        cf_bearing=25),
-    2680: dict(name="Petco Park",           lat=32.707, lon=-117.157, roof="open",        cf_bearing=0),
-    2681: dict(name="Busch Stadium",        lat=38.622, lon=-90.193,  roof="open",        cf_bearing=70),
-    2889: dict(name="American Family Field", lat=43.028, lon=-87.971, roof="retractable", cf_bearing=0),
-    3289: dict(name="Truist Park",          lat=33.890, lon=-84.468,  roof="open",        cf_bearing=25),
-    3309: dict(name="T-Mobile Park",        lat=47.591, lon=-122.332, roof="retractable", cf_bearing=0),
-    3312: dict(name="Oracle Park",          lat=37.778, lon=-122.389, roof="open",        cf_bearing=90),
-    4169: dict(name="Globe Life Field",     lat=32.747, lon=-97.084,  roof="retractable", cf_bearing=0),
-    5325: dict(name="Tropicana Field",      lat=27.768, lon=-82.653,  roof="fixed",       cf_bearing=0),
-    680:  dict(name="Rogers Centre",        lat=43.641, lon=-79.389,  roof="retractable", cf_bearing=0),
-    32:   dict(name="PNC Park",             lat=40.447, lon=-80.006,  roof="open",        cf_bearing=120),
-    31:   dict(name="Nationals Park",       lat=38.873, lon=-77.007,  roof="open",        cf_bearing=30),
+# cf_bearing = degrees (0=N, 90=E) from home plate toward center field. Best-effort —
+# the refresh script (refresh_stadiums.py) pulls authoritative ids+coords from MLB's API
+# and writes data/stadiums.json, which overrides this table. Coords and roof are reliable;
+# the bearings are the piece most worth verifying.
+_STATIC_STADIUMS: Dict[int, Dict] = {
+    1:    dict(name="Angel Stadium",            lat=33.800, lon=-117.883, roof="open",        cf_bearing=45),
+    2:    dict(name="Chase Field",              lat=33.445, lon=-112.067, roof="retractable", cf_bearing=0),
+    3:    dict(name="Oriole Park at Camden Yards", lat=39.284, lon=-76.622, roof="open",      cf_bearing=30),
+    4:    dict(name="Fenway Park",              lat=42.346, lon=-71.097,  roof="open",        cf_bearing=45),
+    5:    dict(name="Wrigley Field",            lat=41.948, lon=-87.656,  roof="open",        cf_bearing=30),
+    7:    dict(name="Rate Field",               lat=41.830, lon=-87.634,  roof="open",        cf_bearing=135),
+    8:    dict(name="Great American Ball Park", lat=39.097, lon=-84.507,  roof="open",        cf_bearing=105),
+    10:   dict(name="Progressive Field",        lat=41.496, lon=-81.685,  roof="open",        cf_bearing=0),
+    12:   dict(name="Coors Field",              lat=39.756, lon=-104.994, roof="open",        cf_bearing=0),
+    14:   dict(name="Comerica Park",            lat=42.339, lon=-83.049,  roof="open",        cf_bearing=150),
+    15:   dict(name="Daikin Park",              lat=29.757, lon=-95.355,  roof="retractable", cf_bearing=345),
+    17:   dict(name="Kauffman Stadium",         lat=39.051, lon=-94.480,  roof="open",        cf_bearing=55),
+    19:   dict(name="Dodger Stadium",           lat=34.074, lon=-118.240, roof="open",        cf_bearing=25),
+    22:   dict(name="loanDepot park",           lat=25.778, lon=-80.220,  roof="retractable", cf_bearing=40),
+    31:   dict(name="Nationals Park",           lat=38.873, lon=-77.007,  roof="open",        cf_bearing=30),
+    32:   dict(name="PNC Park",                 lat=40.447, lon=-80.006,  roof="open",        cf_bearing=120),
+    680:  dict(name="Rogers Centre",            lat=43.641, lon=-79.389,  roof="retractable", cf_bearing=0),
+    2392: dict(name="Target Field",             lat=44.982, lon=-93.278,  roof="open",        cf_bearing=90),
+    2395: dict(name="Citizens Bank Park",       lat=39.906, lon=-75.166,  roof="open",        cf_bearing=15),
+    2602: dict(name="Yankee Stadium",           lat=40.829, lon=-73.926,  roof="open",        cf_bearing=25),
+    2680: dict(name="Petco Park",               lat=32.707, lon=-117.157, roof="open",        cf_bearing=0),
+    2681: dict(name="Busch Stadium",            lat=38.622, lon=-90.193,  roof="open",        cf_bearing=70),
+    3289: dict(name="Truist Park",              lat=33.890, lon=-84.468,  roof="open",        cf_bearing=25),
+    3309: dict(name="T-Mobile Park",            lat=47.591, lon=-122.332, roof="retractable", cf_bearing=0),
+    3312: dict(name="Oracle Park",              lat=37.778, lon=-122.389, roof="open",        cf_bearing=90),
+    3313: dict(name="Citi Field",               lat=40.757, lon=-73.846,  roof="open",        cf_bearing=30),
+    4169: dict(name="Globe Life Field",         lat=32.747, lon=-97.084,  roof="retractable", cf_bearing=0),
+    5325: dict(name="Tropicana Field",          lat=27.768, lon=-82.653,  roof="fixed",       cf_bearing=0),
+    2889: dict(name="American Family Field",    lat=43.028, lon=-87.971,  roof="retractable", cf_bearing=0),
+    2535: dict(name="Sutter Health Park",       lat=38.580, lon=-121.513, roof="open",        cf_bearing=30),
 }
+
+
+def _norm(name: str) -> str:
+    return "".join(c for c in (name or "").lower() if c.isalnum())
+
+
+def _load_overrides(path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                              "data", "stadiums.json")) -> Dict[int, Dict]:
+    """Authoritative table written by refresh_stadiums.py (ids+coords from MLB's API).
+    Keys arrive as strings from JSON; coerce back to int. Empty if the file is absent."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        return {int(k): v for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
+# Final table: static defaults, overridden by the refreshed file when present.
+STADIUMS: Dict[int, Dict] = {**_STATIC_STADIUMS, **_load_overrides()}
+# Name index for a fallback when a venue_id isn't matched (sponsor/id drift).
+_BY_NAME: Dict[str, Dict] = {_norm(v["name"]): v for v in STADIUMS.values()}
+
+
+def _resolve_park(venue_id, venue_name=None) -> Optional[Dict]:
+    park = STADIUMS.get(venue_id) if venue_id is not None else None
+    if park is None and venue_name:
+        park = _BY_NAME.get(_norm(venue_name))
+    return park
 
 
 def wind_out_component(wind_mph: float, wind_from_deg: float, cf_bearing: float) -> float:
@@ -99,12 +137,13 @@ def _fetch_open_meteo(lat: float, lon: float, date_str: str) -> Dict:
 
 
 def get_game_weather(venue_id: Optional[int], iso_utc: Optional[str],
+                     venue_name: Optional[str] = None,
                      fetcher: Optional[Callable] = None) -> Optional[Dict]:
     """Weather + HR factor for a game. None if the park is unknown (safe -> no adjustment).
 
     `fetcher(lat, lon, date_str) -> open-meteo-json` is injectable for testing.
     """
-    park = STADIUMS.get(venue_id) if venue_id is not None else None
+    park = _resolve_park(venue_id, venue_name)
     if not park or "lat" not in park:
         return None
 
