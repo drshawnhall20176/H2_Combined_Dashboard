@@ -53,10 +53,10 @@ def load_statcast():
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_weather(meta_keys: tuple):
     out = {}
-    for vid, gdate in meta_keys:
+    for vid, gdate, vname in meta_keys:
         if vid is not None and vid not in out:
             try:
-                out[vid] = WX.get_game_weather(vid, gdate)
+                out[vid] = WX.get_game_weather(vid, gdate, vname)
             except Exception:
                 out[vid] = None
     return out
@@ -66,7 +66,7 @@ def load_weather(meta_keys: tuple):
 def load_index(date_str: str, fip_constant: float, sims: int, seed: int):
     rows, meta = E.build_slate(date_str, fip_constant)
     sc, k = load_statcast()
-    wx = load_weather(tuple((m.get("venue_id"), m.get("game_date")) for m in meta))
+    wx = load_weather(tuple((m.get("venue_id"), m.get("game_date"), m.get("venue")) for m in meta))
     for r in rows:
         w = wx.get(r.get("_venue_id"))
         r["_weather_hr"] = w["hr_factor"] if w else 1.0   # temp + wind on HR, matches Dinger Engine
