@@ -71,22 +71,24 @@ else:
 
 # --- Styling ----------------------------------------------------------------
 DISPLAY_COLS = ["Hitter", "Team", "Hand", "Opp Pitcher", "Opp Hand", "Advantage", "Lineup",
-                "HR%", "Hit%", "K%", "TB1.5%", "SO Prob", "Barrel%", "xHR/PA", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex"]
+                "HR%", "Hit%", "TB1.5%", "SO Prob", "Barrel%", "xHR/PA", "K%", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex"]
 
 
 def style_hitters(data: pd.DataFrame):
     cols = [c for c in DISPLAY_COLS if c in data.columns]
     view = data[cols]
-    pct = [c for c in ("HR%", "Hit%", "K%", "TB1.5%", "SO Prob", "Barrel%", "xHR/PA") if c in view.columns]
+    pct = [c for c in ("HR%", "Hit%", "TB1.5%", "SO Prob", "K%", "Barrel%", "xHR/PA") if c in view.columns]
     fmt = {"HR": "{:.0f}", "TB": "{:.0f}", "SLG": "{:.3f}", "OPS": "{:.3f}",
            "ISO": "{:.3f}", "PowerIndex": "{:.1f}"}
     fmt.update({c: "{:.1%}" for c in pct})
     styler = view.style.format(fmt)
-    grad_up = [c for c in ("HR%", "Hit%", "K%", "TB1.5%", "SO Prob", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex") if c in view.columns]
+    grad_up = [c for c in ("HR%", "Hit%", "TB1.5%", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex") if c in view.columns]
     if grad_up:
         styler = styler.background_gradient(cmap="RdYlGn", subset=grad_up)
-    if "xK%" in view.columns:
-        styler = styler.background_gradient(cmap="RdYlGn_r", subset=["SO Prob"])
+    # Strikeouts are bad for a hitter, so high = red on both the game prob and the season rate.
+    k_cols = [c for c in ("SO Prob", "K%") if c in view.columns]
+    if k_cols:
+        styler = styler.background_gradient(cmap="RdYlGn_r", subset=k_cols)
     return styler
 
 
@@ -128,10 +130,27 @@ if "Due" in df.columns:
 # --- Per-game detail --------------------------------------------------------
 st.divider()
 st.subheader("Game-by-game")
-for m in meta:
+
+
+def game_time_et(iso_utc):
+    """Format an ISO-UTC start time as local Eastern, e.g. '7:10 PM ET'. 'TBD' if missing."""
+    if not iso_utc:
+        return "TBD"
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(eastern)
+        return dt.strftime("%I:%M %p").lstrip("0") + " ET"   # lstrip keeps it Windows-safe
+    except (ValueError, TypeError):
+        return "TBD"
+
+
+# Chronological order: ISO-UTC strings sort by start time; games without a time go last.
+meta_sorted = sorted(meta, key=lambda m: m.get("game_date") or "9999")
+
+for m in meta_sorted:
     hp, ap = m["home_pm"], m["away_pm"]
+    when = game_time_et(m.get("game_date"))
     badge = "" if (df[df["GameLabel"].str.startswith(m["label"].split(" (Game")[0])]["Lineup"] == "Confirmed").any() else " · projected lineups"
-    with st.expander(f"{m['label']}  —  {m['venue']}  ({m['status']}){badge}"):
+    with st.expander(f"🕒 {when}  ·  {m['label']}  —  {m['venue']}  ({m['status']}){badge}"):
         st.markdown(
             f"✈️ **{m['away_name']}** SP {ap.name}: K/9 {ap.k9:.1f} · ERA {ap.era:.2f} · "
             f"FIP {ap.fip:.2f} · WHIP {ap.whip:.2f}"
@@ -150,7 +169,7 @@ for m in meta:
             sub = game_df[game_df["Team"] == m["home_name"]].sort_values(sort_col, ascending=False)
             st.dataframe(style_hitters(sub), use_container_width=True, hide_index=True)
 
-st.caption("HR% / Hit% / TB1.5% / xK% are matchup-aware model probabilities: each hitter's "
-           "stabilized rates are combined with the opposing pitcher's allowed rates (odds-ratio "
-           "method) and his platoon split, then park-adjusted. PowerIndex is the legacy heuristic, "
-           "kept for reference.")
+st.caption("HR% / Hit% / TB1.5% / SO Prob are matchup-aware model probabilities for TODAY's game: "
+           "each hitter's stabilized rates are combined with the opposing pitcher's allowed rates "
+           "(odds-ratio method) and his platoon split, then park-adjusted. K% is the hitter's SEASON "
+           "strikeout rate (a skill stat) for reference. PowerIndex is the legacy heuristic.")
