@@ -107,6 +107,21 @@ else:
     st.caption(f"Estimated quota cost of a fetch: ~{est_cost} units "
                f"({len(chosen)} markets × ~{n_games} games). Cached for 5 min after fetching.")
 
+    st.markdown("**Stake sizing (fractional Kelly)**")
+    kc1, kc2, kc3 = st.columns(3)
+    with kc1:
+        bankroll = st.number_input("Bankroll ($)", min_value=1.0, value=50.0, step=10.0)
+    with kc2:
+        frac_label = st.select_slider("Kelly fraction", options=["Quarter", "Half", "Full"],
+                                      value="Quarter",
+                                      help="Quarter-Kelly is the safe default — model probabilities "
+                                           "are noisy, and full Kelly overbets when an edge is off.")
+        kelly_frac = {"Quarter": 0.25, "Half": 0.5, "Full": 1.0}[frac_label]
+    with kc3:
+        cap_pct = st.slider("Max bet (% of bankroll)", 1, 25, 5,
+                            help="Hard ceiling per bet — protects against a mis-estimated edge "
+                                 "recommending a huge stake.") / 100.0
+
     if st.button("📡 Fetch live odds & compute edges", type="primary", disabled=not chosen):
         st.session_state["do_fetch"] = True
 
@@ -129,20 +144,34 @@ else:
             edf = pd.DataFrame(edges)
             edf = edf[edf["EV%"] >= min_ev].copy()
             edf["Market"] = edf["Market"].map(lambda k: MARKET_LABEL.get(k, k))
+            # Recommended stake per bet (fractional Kelly, capped). Recomputes instantly when
+            # you move the bankroll / fraction / cap controls — no re-fetch.
+            edf["Stake $"] = edf.apply(
+                lambda r: O.kelly_stake(r["ModelProb"], r["Price"], bankroll, kelly_frac, cap_pct), axis=1)
+            edf["Stake %"] = edf["Stake $"] / bankroll
+
+            total_stake = edf["Stake $"].sum()
+            bets = int((edf["Stake $"] > 0).sum())
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Recommended bets", bets)
+            s2.metric("Total exposure", f"${total_stake:,.2f}")
+            s3.metric("of bankroll", f"{(total_stake / bankroll * 100) if bankroll else 0:.0f}%")
+
             show = edf.rename(columns={"ModelProb": "Model %", "ImpliedBest": "Impl %",
                                        "NoVigMkt": "NoVig %", "EdgeVsMkt": "Edge", "Price": "Odds"})
             cols = ["Player", "Team", "Market", "Side", "Line", "Proj", "Model %",
-                    "Book", "Odds", "Impl %", "NoVig %", "EV%", "Game"]
+                    "Book", "Odds", "EV%", "Stake $", "Stake %", "Game"]
             show = show[[c for c in cols if c in show.columns]]
             styler = (
                 show.style
-                .format({"Model %": "{:.1%}", "Impl %": "{:.1%}", "NoVig %": "{:.1%}",
-                         "Proj": "{:.2f}", "Line": "{:.1f}", "EV%": "{:+.1f}"})
+                .format({"Model %": "{:.1%}", "Proj": "{:.2f}", "Line": "{:.1f}",
+                         "EV%": "{:+.1f}", "Stake $": "${:.2f}", "Stake %": "{:.1%}"})
                 .background_gradient(cmap="RdYlGn", subset=["EV%"])
+                .background_gradient(cmap="Blues", subset=["Stake $"])
             )
             st.dataframe(styler, use_container_width=True, hide_index=True, height=520)
-            st.caption("Ranked by EV% at the best available price. EV% = model_prob × decimal "
-                       "payout − 1. Positive = the price beats the model's fair value.")
+            st.caption("Ranked by EV% at the best available price. Stake = fractional Kelly on your "
+                       "bankroll, capped. EV% = model_prob × decimal payout − 1.")
         else:
             st.info("No edges to show (no props matched, or all below the EV filter).")
 
@@ -179,8 +208,14 @@ with st.expander("How edge is computed (read me)"):
 4. **Edge vs market** = Model % − NoVig %. If this is large, you're disagreeing with the
    market — sometimes that's an edge, often it means the model is missing something
    (injury, weather, role change). Trust it only once calibration backs it up.
+5. **Stake $** = fractional Kelly: `f* = (p·d − 1)/(d − 1)`, scaled by your chosen fraction
+   and capped. Kelly is the bet size that maximizes long-run growth — but only if your
+   probability is exact. Since it isn't, **quarter-Kelly with a hard cap** is the disciplined
+   default: it captures most of the growth with far less risk of ruin when an edge is
+   mis-estimated. Negative-EV bets get $0.
 
 Line shopping matters: always bet the **best** price (the Book column), since EV swings
-fast with the number.
+fast with the number. And remember: from a small bankroll, correct sizing means *small*
+bets and slow, bumpy growth — that's the math, not a flaw.
 """
     )
