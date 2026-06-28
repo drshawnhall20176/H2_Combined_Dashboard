@@ -53,6 +53,41 @@ def test_no_duplicate_or_clobbered_parks():
     assert W.STADIUMS[2]["name"] == "Chase Field"   # not clobbered by a placeholder
 
 
+def test_full_table_complete():
+    # All 30 current parks present, each fully populated, names unique (guards typos/clobbers).
+    assert len(W._STATIC_STADIUMS) == 30
+    for v in W._STATIC_STADIUMS.values():
+        assert {"name", "lat", "lon", "roof", "cf_bearing"} <= set(v)
+        assert v["roof"] in ("open", "fixed", "retractable")
+    names = [v["name"] for v in W._STATIC_STADIUMS.values()]
+    assert len(names) == len(set(names))
+
+
+def test_name_fallback_resolves():
+    # venue_id missing from table, but the name matches -> still resolves.
+    def fake(lat, lon, date_str):
+        return {"hourly": {"time": ["2026-06-28T22:00"], "temperature_2m": [80],
+                           "wind_speed_10m": [5], "wind_direction_10m": [180]}}
+    wx = W.get_game_weather(999999, "2026-06-28T22:00:00Z", venue_name="Wrigley Field", fetcher=fake)
+    assert wx is not None and wx["park"] == "Wrigley Field"
+    # garbage name and id -> None
+    assert W.get_game_weather(999999, "2026-06-28T22:00:00Z", venue_name="Nowhere Park", fetcher=fake) is None
+
+
+def test_json_override_loading():
+    import json
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "stadiums.json")
+        with open(p, "w") as f:
+            json.dump({"2": {"name": "Chase Field", "lat": 33.4, "lon": -112.0,
+                             "roof": "retractable", "cf_bearing": 0}}, f)
+        ov = W._load_overrides(p)
+        assert 2 in ov and ov[2]["name"] == "Chase Field"   # JSON string key -> int
+    assert W._load_overrides("/no/such/file.json") == {}     # absent -> empty
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
