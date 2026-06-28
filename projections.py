@@ -524,7 +524,7 @@ def enrich_hitter_rows(rows: List[Dict], sims: int = DEFAULT_SIMS, seed: Optiona
         r["HR%"] = float(np.mean(sim["hr"] >= 1))
         r["Hit%"] = float(np.mean(sim["hits"] >= 1))
         r["TB1.5%"] = float(np.mean(sim["tb"] > 1.5))
-        r["xK%"] = float(np.mean(sim["k"] >= 1))
+        r["SO Prob"] = float(np.mean(sim["k"] >= 1))
         if xhr is not None:
             sc = statcast.get(r.get("_pid")) or {}
             actual_hr_pa = _f(stat, "homeRuns") / max(_f(stat, "plateAppearances"), 1)
