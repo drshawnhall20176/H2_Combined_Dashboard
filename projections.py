@@ -208,11 +208,12 @@ def batter_base_rates(season_stat: Dict, split_stat: Optional[Dict] = None,
 
 
 def batter_pa_probs(season_stat: Dict, park: Dict, opp_allowed: Optional[Dict] = None,
-                    split_stat: Optional[Dict] = None, xhr_pa: Optional[float] = None) -> Optional[np.ndarray]:
-    """Per-PA outcome distribution: matchup-, platoon-, and (optionally) Statcast-aware.
+                    split_stat: Optional[Dict] = None, xhr_pa: Optional[float] = None,
+                    weather_hr: float = 1.0) -> Optional[np.ndarray]:
+    """Per-PA outcome distribution: matchup-, platoon-, Statcast-, and weather-aware.
 
     Order: stabilized base rates (handedness + barrel-implied HR) -> odds-ratio vs the
-    pitcher -> park."""
+    pitcher -> park -> weather (temperature + wind on HR)."""
     base = batter_base_rates(season_stat, split_stat, xhr_pa)
     if base is None:
         return None
@@ -230,8 +231,8 @@ def batter_pa_probs(season_stat: Dict, park: Dict, opp_allowed: Optional[Dict] =
             scale = adj / nonhr
             p_1b *= scale; p_2b *= scale; p_3b *= scale
 
-    # Park adjustment.
-    p_hr *= park.get("hr", 1.0)
+    # Park, then weather (temperature + out-to-CF wind act on home runs).
+    p_hr *= park.get("hr", 1.0) * weather_hr
     p_3b *= park.get("hits", 1.0); p_2b *= park.get("hits", 1.0); p_1b *= park.get("hits", 1.0)
 
     probs = np.array([0.0, p_k, p_bb, p_1b, p_2b, p_3b, p_hr], dtype=np.float64)
@@ -462,7 +463,7 @@ def build_projection_index(rows: List[Dict], meta: List[Dict],
         park = PARK_FACTORS.get(r.get("_venue_id"), NEUTRAL_PARK)
         opp_allowed = pitcher_allowed_rates(r.get("_opp_stat"))
         xhr = xhr_from_statcast(r.get("_pid"), statcast, statcast_k)
-        probs = batter_pa_probs(stat, park, opp_allowed, r.get("_split_stat"), xhr)
+        probs = batter_pa_probs(stat, park, opp_allowed, r.get("_split_stat"), xhr, r.get("_weather_hr", 1.0))
         if probs is None:
             continue
         sim = simulate_batter(probs, r.get("_exp_pa", DEFAULT_UNKNOWN_PA), sims, rng)
@@ -554,7 +555,7 @@ def enrich_hitter_rows(rows: List[Dict], sims: int = DEFAULT_SIMS, seed: Optiona
         park = PARK_FACTORS.get(r.get("_venue_id"), NEUTRAL_PARK)
         opp_allowed = pitcher_allowed_rates(r.get("_opp_stat"))
         xhr = xhr_from_statcast(r.get("_pid"), statcast, statcast_k)
-        probs = batter_pa_probs(stat, park, opp_allowed, r.get("_split_stat"), xhr)
+        probs = batter_pa_probs(stat, park, opp_allowed, r.get("_split_stat"), xhr, r.get("_weather_hr", 1.0))
         if probs is None:
             continue
         sim = simulate_batter(probs, r.get("_exp_pa", DEFAULT_UNKNOWN_PA), sims, rng)
