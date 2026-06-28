@@ -82,7 +82,7 @@ def style_hitters(data: pd.DataFrame):
            "ISO": "{:.3f}", "PowerIndex": "{:.1f}"}
     fmt.update({c: "{:.1%}" for c in pct})
     styler = view.style.format(fmt)
-    grad_up = [c for c in ("HR%", "Hit%", "K%", "TB1.5%", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex") if c in view.columns]
+    grad_up = [c for c in ("HR%", "Hit%", "K%", "TB1.5%", "SO Prob", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex") if c in view.columns]
     if grad_up:
         styler = styler.background_gradient(cmap="RdYlGn", subset=grad_up)
     if "xK%" in view.columns:
