@@ -86,6 +86,24 @@ def test_compute_edges_matches_and_ranks():
     assert edges[0]["Player"] == "José Ramírez"
 
 
+def test_kelly_fraction():
+    # p=0.60 at even money (+100): f* = (0.6*2 - 1)/(2-1) = 0.20
+    assert abs(O.kelly_fraction(0.60, 100) - 0.20) < 1e-9
+    assert O.kelly_fraction(0.50, 100) == 0.0      # fair odds -> no edge
+    assert O.kelly_fraction(0.40, 100) == 0.0      # -EV -> clamped to 0
+
+
+def test_kelly_stake_caps_and_fractions():
+    # full f=0.20, quarter -> 0.05; 5% cap is not binding -> 0.05 * 1000 = 50
+    assert O.kelly_stake(0.60, 100, 1000, fraction=0.25, cap_pct=0.05) == 50.0
+    # tighter 2% cap binds -> 20
+    assert O.kelly_stake(0.60, 100, 1000, fraction=0.25, cap_pct=0.02) == 20.0
+    # -EV bet -> no stake
+    assert O.kelly_stake(0.45, 100, 1000) == 0.0
+    # small bankroll, half-Kelly -> small bet
+    assert O.kelly_stake(0.58, 120, 50, fraction=0.5, cap_pct=0.05) > 0
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
