@@ -22,6 +22,7 @@ import projections as P
 import odds_api as O
 import statcast_data as SC
 import weather as WX
+import betlog as B
 
 st.set_page_config(page_title="Edge Board", page_icon="📈", layout="wide")
 st.title("📈 Edge Board")
@@ -197,6 +198,41 @@ else:
             st.dataframe(styler, use_container_width=True, hide_index=True, height=520)
             st.caption("Ranked by EV% at the best available price. Stake = fractional Kelly on your "
                        "bankroll, capped. EV% = model_prob × decimal payout − 1.")
+
+            # --- Log straight to the proof layer (pre-filled, including Kelly stake) ----
+            st.markdown("**📒 Log a bet to your proof layer**")
+            logable = edf[edf["Stake $"] > 0] if "Stake $" in edf.columns else edf
+            if logable.empty:
+                st.caption("No +EV bets to log at the current filter.")
+            else:
+                def _label(i):
+                    r = logable.loc[i]
+                    return (f"{r['Player']} · {r['Market']} {r['Side']} {float(r['Line']):g} "
+                            f"@ {int(r['Price']):+d}  (EV {r['EV%']:+.1f}%, ${r['Stake $']:.2f})")
+
+                picks = st.multiselect("Pick the bets you placed — they log with the odds, model "
+                                       "probability, and Kelly stake already filled in",
+                                       list(logable.index), format_func=_label)
+                if st.button("Log selected bets", type="primary", disabled=not picks):
+                    logged_sigs = st.session_state.setdefault("logged_sigs", set())
+                    n = skipped = 0
+                    for i in picks:
+                        r = logable.loc[i]
+                        sig = (date_str, r["Player"], r["Market"], r["Side"],
+                               float(r["Line"]), int(r["Price"]))
+                        if sig in logged_sigs:
+                            skipped += 1
+                            continue
+                        B.add_bet(slate_date=date_str, game=r.get("Game"), player=r["Player"],
+                                  market=r["Market"], side=r["Side"], line=float(r["Line"]),
+                                  entry_odds=int(r["Price"]), model_prob=float(r["ModelProb"]),
+                                  stake=float(r.get("Stake $", 0) or 0), book=r.get("Book"))
+                        logged_sigs.add(sig)
+                        n += 1
+                    msg = f"Logged {n} bet(s) to the Bet Log — settle them there after the games."
+                    if skipped:
+                        msg += f" Skipped {skipped} already logged this session."
+                    st.success(msg)
         else:
             st.info("No edges to show (no props matched, or all below the EV filter).")
 
