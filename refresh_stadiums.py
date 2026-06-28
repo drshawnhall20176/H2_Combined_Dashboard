@@ -54,8 +54,8 @@ def main() -> int:
         if lat is None or lon is None:
             missing_coords.append(name)
             continue
-        key = W._norm(name)
-        if key in overlay:
+        key = W._best_name_key(W._norm(name), overlay)
+        if key:
             roof, bearing = overlay[key]
         else:
             roof, bearing = "open", 0

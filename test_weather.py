@@ -88,6 +88,27 @@ def test_json_override_loading():
     assert W._load_overrides("/no/such/file.json") == {}     # absent -> empty
 
 
+def test_sponsor_tolerant_matching():
+    # A sponsor-prefixed current name still resolves to the right park...
+    k = W._best_name_key(W._norm("UNIQLO Field at Dodger Stadium"), W._BY_NAME)
+    assert k and W._BY_NAME[k]["name"] == "Dodger Stadium"
+    k2 = W._best_name_key(W._norm("Whatever Co Field at Wrigley Field"), W._BY_NAME)
+    assert k2 and W._BY_NAME[k2]["name"] == "Wrigley Field"
+    # ...but short generic tokens must NOT match anything.
+    assert W._best_name_key("park", W._BY_NAME) is None
+    assert W._best_name_key("field", W._BY_NAME) is None
+
+
+def test_override_merge_corrects_defaulted_bearing():
+    # A refreshed entry under a sponsor name with a defaulted 0 bearing should be corrected
+    # back to the curated bearing via name match, while keeping the API's id + coords.
+    overrides = {111: {"name": "UNIQLO Field at Dodger Stadium", "lat": 34.07, "lon": -118.24,
+                       "roof": "open", "cf_bearing": 0}}
+    merged = W._merge_overrides(W._STATIC_STADIUMS, overrides)
+    assert merged[111]["cf_bearing"] == 25      # corrected from the defaulted 0
+    assert merged[111]["lat"] == 34.07          # API coords retained
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

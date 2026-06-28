@@ -79,6 +79,24 @@ def _norm(name: str) -> str:
     return "".join(c for c in (name or "").lower() if c.isalnum())
 
 
+def _best_name_key(norm_name: str, keys) -> Optional[str]:
+    """Match a normalized park name to a known key, tolerant of sponsor prefixes/suffixes.
+
+    Exact match first; otherwise the longest known key that is contained in the incoming
+    name (or vice versa). e.g. 'uniqlofieldatdodgerstadium' -> 'dodgerstadium'. The length
+    floor avoids short-token collisions like 'field' / 'park'."""
+    if norm_name in keys:
+        return norm_name
+    if len(norm_name) < 8:          # too short to fuzzy-match safely (e.g. 'park', 'field')
+        return None
+    best = None
+    for k in keys:
+        if len(k) >= 8 and (k in norm_name or norm_name in k):
+            if best is None or len(k) > len(best):
+                best = k
+    return best
+
+
 def _load_overrides(path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                               "data", "stadiums.json")) -> Dict[int, Dict]:
     """Authoritative table written by refresh_stadiums.py (ids+coords from MLB's API).
@@ -93,8 +111,27 @@ def _load_overrides(path: str = os.path.join(os.path.dirname(os.path.abspath(__f
         return {}
 
 
-# Final table: static defaults, overridden by the refreshed file when present.
-STADIUMS: Dict[int, Dict] = {**_STATIC_STADIUMS, **_load_overrides()}
+def _merge_overrides(static: Dict[int, Dict], overrides: Dict[int, Dict]) -> Dict[int, Dict]:
+    """Combine the curated static table with the API-refreshed file.
+
+    The refreshed file supplies authoritative id + name + coordinates. Roof and orientation
+    always come from our curated static table via tolerant name-match — so a sponsor rename
+    (e.g. 'UNIQLO Field at Dodger Stadium') can't strand a park on a defaulted 0° bearing,
+    even if the refresh script wrote one."""
+    static_by_name = {_norm(v["name"]): v for v in static.values()}
+    merged = dict(static)
+    for vid, o in overrides.items():
+        entry = dict(o)
+        key = _best_name_key(_norm(o.get("name", "")), static_by_name)
+        if key:  # re-attach our curated roof/bearing by name
+            entry["roof"] = static_by_name[key]["roof"]
+            entry["cf_bearing"] = static_by_name[key]["cf_bearing"]
+        merged[vid] = entry
+    return merged
+
+
+# Final table: curated defaults + authoritative ids/coords from the refreshed file.
+STADIUMS: Dict[int, Dict] = _merge_overrides(_STATIC_STADIUMS, _load_overrides())
 # Name index for a fallback when a venue_id isn't matched (sponsor/id drift).
 _BY_NAME: Dict[str, Dict] = {_norm(v["name"]): v for v in STADIUMS.values()}
 
@@ -102,7 +139,8 @@ _BY_NAME: Dict[str, Dict] = {_norm(v["name"]): v for v in STADIUMS.values()}
 def _resolve_park(venue_id, venue_name=None) -> Optional[Dict]:
     park = STADIUMS.get(venue_id) if venue_id is not None else None
     if park is None and venue_name:
-        park = _BY_NAME.get(_norm(venue_name))
+        key = _best_name_key(_norm(venue_name), _BY_NAME)
+        park = _BY_NAME.get(key) if key else None
     return park
 
 
