@@ -86,7 +86,7 @@ def style_hitters(data: pd.DataFrame):
     if grad_up:
         styler = styler.background_gradient(cmap="RdYlGn", subset=grad_up)
     if "xK%" in view.columns:
-        styler = styler.background_gradient(cmap="RdYlGn_r", subset=["xK%"])
+        styler = styler.background_gradient(cmap="RdYlGn_r", subset=["SO Prob"])
     return styler
 
 
