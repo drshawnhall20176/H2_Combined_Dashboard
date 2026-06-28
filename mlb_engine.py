@@ -235,6 +235,7 @@ def get_schedule(date_str: str) -> List[Dict[str, Any]]:
             games.append({
                 "gamePk": g.get("gamePk"),
                 "gameNumber": g.get("gameNumber", 1),
+                "game_date": g.get("gameDate"),   # ISO UTC start, e.g. 2026-06-28T17:10:00Z
                 "status": (g.get("status", {}) or {}).get("detailedState", ""),
                 "venue_name": (g.get("venue", {}) or {}).get("name", ""),
                 "venue_id": (g.get("venue", {}) or {}).get("id"),
@@ -318,6 +319,7 @@ def build_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAULT,
             "venue": s["game"]["venue_name"],
             "venue_id": s["game"].get("venue_id"),
             "status": s["game"]["status"],
+            "game_date": s["game"].get("game_date"),
             "away_name": s["game"]["away_name"],
             "home_name": s["game"]["home_name"],
             "home_pm": s["home_pm"],
