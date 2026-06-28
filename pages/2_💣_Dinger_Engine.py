@@ -71,18 +71,18 @@ else:
 
 # --- Styling ----------------------------------------------------------------
 DISPLAY_COLS = ["Hitter", "Team", "Hand", "Opp Pitcher", "Opp Hand", "Advantage", "Lineup",
-                "HR%", "Hit%", "TB1.5%", "xK%", "Barrel%", "xHR/PA", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex"]
+                "HR%", "Hit%", "K%", "TB1.5%", "SO Prob", "Barrel%", "xHR/PA", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex"]
 
 
 def style_hitters(data: pd.DataFrame):
     cols = [c for c in DISPLAY_COLS if c in data.columns]
     view = data[cols]
-    pct = [c for c in ("HR%", "Hit%", "TB1.5%", "xK%", "Barrel%", "xHR/PA") if c in view.columns]
+    pct = [c for c in ("HR%", "Hit%", "K%", "TB1.5%", "SO Prob", "Barrel%", "xHR/PA") if c in view.columns]
     fmt = {"HR": "{:.0f}", "TB": "{:.0f}", "SLG": "{:.3f}", "OPS": "{:.3f}",
            "ISO": "{:.3f}", "PowerIndex": "{:.1f}"}
     fmt.update({c: "{:.1%}" for c in pct})
     styler = view.style.format(fmt)
-    grad_up = [c for c in ("HR%", "Hit%", "TB1.5%", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex") if c in view.columns]
+    grad_up = [c for c in ("HR%", "Hit%", "K%", "TB1.5%", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex") if c in view.columns]
     if grad_up:
         styler = styler.background_gradient(cmap="RdYlGn", subset=grad_up)
     if "xK%" in view.columns:
