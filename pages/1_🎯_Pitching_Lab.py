@@ -9,6 +9,7 @@ matchup), so a strikeout arm vs a whiff-prone lineup projects higher than vs a c
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import pytz
 
 import mlb_engine as E
 import projections as P
@@ -16,6 +17,19 @@ import projections as P
 st.set_page_config(page_title="Pitching Lab", page_icon="🎯", layout="wide")
 st.title("🎯 Pitching Lab")
 st.caption("ERA vs FIP regression and matchup-aware strikeout/innings projections")
+
+eastern = pytz.timezone("US/Eastern")
+
+
+def game_time_et(iso_utc):
+    """ISO-UTC start -> '7:10 PM ET', or 'TBD' if missing."""
+    if not iso_utc:
+        return "TBD"
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(eastern)
+        return dt.strftime("%I:%M %p").lstrip("0") + " ET"
+    except (ValueError, TypeError):
+        return "TBD"
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -33,6 +47,7 @@ def load(date_str: str, fip_constant: float):
                 "Pitcher": pm.name, "Team": team, "Opponent": opp, "Hand": pm.hand,
                 "ERA": round(pm.era, 2), "FIP": pm.fip, "Delta": round(pm.era - pm.fip, 2),
                 "K/9": round(pm.k9, 1), "WHIP": round(pm.whip, 2), "HR/9": round(pm.hr9, 2), "OBA": pm.oba,
+                "_game_date": m.get("game_date"),
             })
     return fip_rows, projections
 
@@ -54,6 +69,7 @@ if not fip_rows:
     st.stop()
 
 df = pd.DataFrame(fip_rows)
+df["Time"] = df["_game_date"].apply(game_time_et)
 
 # === Matchup-aware projections =============================================
 st.subheader("⚡ Matchup-aware starter projections")
@@ -61,8 +77,14 @@ st.caption("Expected line vs the opposing lineup. Proj K already accounts for ho
            "specific lineup strikes out — the same odds-ratio matchup used on the hitter side.")
 if proj_rows:
     pdf = pd.DataFrame(proj_rows)
+    pdf["Time"] = pdf["_game_date"].apply(game_time_et)
+    sort_mode = st.radio("Sort", ["Chronological", "Projected K"], horizontal=True, key="proj_sort")
+    if sort_mode == "Chronological":
+        pdf = pdf.sort_values("_game_date", kind="stable", na_position="last")
+    else:
+        pdf = pdf.sort_values("Proj K", ascending=False, kind="stable")
     show = pdf.rename(columns={"K over%": "SO o5.5", "K fair": "SO fair"})
-    cols = ["Pitcher", "Team", "Opp", "Hand", "Proj IP", "Proj K", "SO o5.5", "SO fair",
+    cols = ["Time", "Pitcher", "Team", "Opp", "Hand", "Proj IP", "Proj K", "SO o5.5", "SO fair",
             "Proj BB", "Proj Outs", "ERA", "FIP"]
     show = show[[c for c in cols if c in show.columns]]
     st.dataframe(
@@ -83,8 +105,10 @@ m1.metric("Probable starters", len(df))
 m2.metric("Positive-regression (buy)", len(buys))
 m3.metric("Negative-regression (fade)", len(fades))
 
+fip_cols = ["Time", "Pitcher", "Team", "Opponent", "Hand", "ERA", "FIP", "Delta",
+            "K/9", "WHIP", "HR/9", "OBA"]
 styled = (
-    df.sort_values("Delta", ascending=False)
+    df.sort_values("Delta", ascending=False)[fip_cols]
     .style.format({"ERA": "{:.2f}", "FIP": "{:.2f}", "Delta": "{:+.2f}",
                    "K/9": "{:.1f}", "WHIP": "{:.2f}", "HR/9": "{:.2f}", "OBA": "{:.3f}"})
     .background_gradient(cmap="RdYlGn", subset=["Delta", "K/9"])
