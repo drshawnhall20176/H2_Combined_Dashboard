@@ -201,3 +201,27 @@ def fetch_slate_props(date_str: str, api_key: str, markets: List[str]) -> Tuple[
         fetched += 1
     return offers, {"events_total": len(todays), "events_fetched": fetched,
                     "remaining": remaining}
+
+
+# ---- Kelly stake sizing ----------------------------------------------------
+def kelly_fraction(prob: float, american: float) -> float:
+    """Full-Kelly fraction of bankroll for a bet at these odds. 0 if no edge.
+
+    f* = (p*d - 1) / (d - 1), where d is decimal odds. This is the stake that maximizes
+    long-run bankroll growth IF your probability is exactly right."""
+    d = american_to_decimal(american)
+    b = d - 1
+    if b <= 0:
+        return 0.0
+    return max((prob * d - 1) / b, 0.0)
+
+
+def kelly_stake(prob: float, american: float, bankroll: float,
+                fraction: float = 0.25, cap_pct: float = 0.05) -> float:
+    """Recommended dollar stake using FRACTIONAL Kelly, capped at cap_pct of bankroll.
+
+    Why fractional + capped: full Kelly assumes your probability is exact. Model
+    probabilities are noisy, so betting full Kelly overbets and risks ruin when an edge is
+    mis-estimated. Quarter-Kelly (0.25) with a hard per-bet cap is the standard discipline."""
+    f = min(kelly_fraction(prob, american) * fraction, cap_pct)
+    return round(max(f, 0.0) * bankroll, 2)
