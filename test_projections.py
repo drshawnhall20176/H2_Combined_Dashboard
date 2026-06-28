@@ -156,6 +156,41 @@ def test_handedness_split_applies():
     assert abs(p_tiny[P.HR] - base[P.HR]) < 0.01
 
 
+def test_lineup_k_bb_rates():
+    whiff = [dict(plateAppearances=600, strikeOuts=180, baseOnBalls=45) for _ in range(9)]
+    rates = P.lineup_k_bb_rates(whiff)
+    assert 0.25 < rates["k"] < 0.32          # ~30% K lineup
+    # thin lineup data -> None (falls back to neutral)
+    assert P.lineup_k_bb_rates([dict(plateAppearances=10, strikeOuts=3, baseOnBalls=1)]) is None
+
+
+def test_pitcher_matchup_moves_strikeouts():
+    ace = dict(battersFaced=720, inningsPitched="180.0", gamesStarted=29, strikeOuts=235, baseOnBalls=42)
+    whiff = P.lineup_k_bb_rates([dict(plateAppearances=600, strikeOuts=180, baseOnBalls=45) for _ in range(9)])
+    contact = P.lineup_k_bb_rates([dict(plateAppearances=600, strikeOuts=90, baseOnBalls=45) for _ in range(9)])
+    k_vs_whiff = P.project_pitcher(ace, whiff)["exp_k"]
+    k_neutral = P.project_pitcher(ace)["exp_k"]
+    k_vs_contact = P.project_pitcher(ace, contact)["exp_k"]
+    assert k_vs_whiff > k_neutral > k_vs_contact
+
+
+def test_pitcher_matchup_moves_walks():
+    ace = dict(battersFaced=720, inningsPitched="180.0", gamesStarted=29, strikeOuts=235, baseOnBalls=42)
+    patient = P.lineup_k_bb_rates([dict(plateAppearances=600, strikeOuts=120, baseOnBalls=80) for _ in range(9)])
+    hacker = P.lineup_k_bb_rates([dict(plateAppearances=600, strikeOuts=120, baseOnBalls=25) for _ in range(9)])
+    assert P.project_pitcher(ace, patient)["exp_bb"] > P.project_pitcher(ace, hacker)["exp_bb"]
+
+
+def test_lineup_rate_map():
+    rows = [
+        {"GameLabel": "A @ B", "Team": "A", "_stat": dict(plateAppearances=600, strikeOuts=150, baseOnBalls=50)},
+        {"GameLabel": "A @ B", "Team": "A", "_stat": dict(plateAppearances=600, strikeOuts=120, baseOnBalls=60)},
+    ]
+    m = P.build_lineup_rate_map(rows)
+    assert ("A @ B", "A") in m
+    assert m[("A @ B", "A")] is None or "k" in m[("A @ B", "A")]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
