@@ -69,7 +69,7 @@ def load_index(date_str: str, fip_constant: float, sims: int, seed: int):
     wx = load_weather(tuple((m.get("venue_id"), m.get("game_date"), m.get("venue")) for m in meta))
     for r in rows:
         w = wx.get(r.get("_venue_id"))
-        r["_weather_hr"] = w["hr_factor"] if w else 1.0   # temp + wind on HR, matches Dinger Engine
+        r["_weather_hr"] = w["hr_factor"] if w else 1.0  # temp + wind on HR, matches Dinger Engine
     # Statcast + weather attached -> HR probabilities here are consistent with the Dinger Engine.
     return P.build_projection_index(rows, meta, sims=sims, seed=seed, statcast=sc, statcast_k=k)
 
@@ -133,6 +133,25 @@ else:
     st.caption(f"Estimated quota cost of a fetch: ~{est_cost} units "
                f"({len(chosen)} markets × ~{n_games} games). Cached for 5 min after fetching.")
 
+    st.markdown("**Credibility filters** — keep the board honest, not just impressive")
+    gc1, gc2, gc3 = st.columns(3)
+    with gc1:
+        max_odds = st.slider("Max odds — skip long shots", 150, 1000, 400, 25,
+                             help="Long-shot prices (roughly +450 and up — think 2+ HR props) are "
+                                  "where the model's tail probabilities are least reliable, so huge "
+                                  "'EV' there is almost always model error, not a real edge. Capping "
+                                  "the price keeps the board on bets the model can actually be trusted on.")
+    with gc2:
+        max_ev = st.slider("Max EV% — skip 'too good to be true'", 10, 100, 25, 5,
+                           help="A genuine edge is usually a few percent. A +50% or +90% EV is almost "
+                                "always the model being overconfident — especially on rare events or "
+                                "high-probability pitcher props — not free money the whole market missed. "
+                                "Hiding implausible EV protects you from trusting model error.")
+    with gc3:
+        top_n = st.slider("Show top N edges", 5, 50, 20, 5,
+                          help="Surface the most credible plays, not every prop with a positive number. "
+                               "You'd never bet 200 props — don't let the board imply you should.")
+
     st.markdown("**Stake sizing (fractional Kelly)**")
     kc1, kc2, kc3 = st.columns(3)
     with kc1:
@@ -168,71 +187,92 @@ else:
 
         if edges:
             edf = pd.DataFrame(edges)
-            edf = edf[edf["EV%"] >= min_ev].copy()
-            edf["Market"] = edf["Market"].map(lambda k: MARKET_LABEL.get(k, k))
-            # Recommended stake per bet (fractional Kelly, capped). Recomputes instantly when
-            # you move the bankroll / fraction / cap controls — no re-fetch.
-            edf["Stake $"] = edf.apply(
-                lambda r: O.kelly_stake(r["ModelProb"], r["Price"], bankroll, kelly_frac, cap_pct), axis=1)
-            edf["Stake %"] = edf["Stake $"] / bankroll
+            # Credibility filters: clear the EV floor, drop long shots and implausible EV, keep top N.
+            edf = edf[(edf["EV%"] >= min_ev) & (edf["EV%"] <= max_ev)
+                      & (edf["Price"] <= max_odds)].copy()
+            edf = edf.sort_values("EV%", ascending=False).head(top_n).copy()
+            n_longshots = sum(1 for e in edges if e["EV%"] >= min_ev and e["Price"] > max_odds)
+            n_toohigh = sum(1 for e in edges if e["EV%"] > max_ev and e["Price"] <= max_odds)
 
-            total_stake = edf["Stake $"].sum()
-            bets = int((edf["Stake $"] > 0).sum())
-            s1, s2, s3 = st.columns(3)
-            s1.metric("Recommended bets", bets)
-            s2.metric("Total exposure", f"${total_stake:,.2f}")
-            s3.metric("of bankroll", f"{(total_stake / bankroll * 100) if bankroll else 0:.0f}%")
-
-            show = edf.rename(columns={"ModelProb": "Model %", "ImpliedBest": "Impl %",
-                                       "NoVigMkt": "NoVig %", "EdgeVsMkt": "Edge", "Price": "Odds"})
-            cols = ["Player", "Team", "Market", "Side", "Line", "Proj", "Model %",
-                    "Book", "Odds", "EV%", "Stake $", "Stake %", "Game"]
-            show = show[[c for c in cols if c in show.columns]]
-            styler = (
-                show.style
-                .format({"Model %": "{:.1%}", "Proj": "{:.2f}", "Line": "{:.1f}",
-                         "EV%": "{:+.1f}", "Stake $": "${:.2f}", "Stake %": "{:.1%}"})
-                .background_gradient(cmap="RdYlGn", subset=["EV%"])
-                .background_gradient(cmap="Blues", subset=["Stake $"])
-            )
-            st.dataframe(styler, use_container_width=True, hide_index=True, height=520)
-            st.caption("Ranked by EV% at the best available price. Stake = fractional Kelly on your "
-                       "bankroll, capped. EV% = model_prob × decimal payout − 1.")
-
-            # --- Log straight to the proof layer (pre-filled, including Kelly stake) ----
-            st.markdown("**📒 Log a bet to your proof layer**")
-            logable = edf[edf["Stake $"] > 0] if "Stake $" in edf.columns else edf
-            if logable.empty:
-                st.caption("No +EV bets to log at the current filter.")
+            if edf.empty:
+                st.info(f"No credible edges at these filters. Hidden: {n_longshots} long shots "
+                        f"(price beyond +{max_odds}) and {n_toohigh} implausibly-high-EV plays "
+                        f"(over {max_ev}% — likely model error). Loosen the filters to see more, but "
+                        f"they're hidden for a reason: that's where the model is least trustworthy.")
             else:
-                def _label(i):
-                    r = logable.loc[i]
-                    return (f"{r['Player']} · {r['Market']} {r['Side']} {float(r['Line']):g} "
-                            f"@ {int(r['Price']):+d}  (EV {r['EV%']:+.1f}%, ${r['Stake $']:.2f})")
+                edf["Market"] = edf["Market"].map(lambda k: MARKET_LABEL.get(k, k))
+                # Recommended stake per bet (fractional Kelly, capped). Recomputes instantly when
+                # you move the bankroll / fraction / cap controls — no re-fetch.
+                edf["Stake $"] = edf.apply(
+                    lambda r: O.kelly_stake(r["ModelProb"], r["Price"], bankroll, kelly_frac, cap_pct), axis=1)
+                edf["Stake %"] = edf["Stake $"] / bankroll
 
-                picks = st.multiselect("Pick the bets you placed — they log with the odds, model "
-                                       "probability, and Kelly stake already filled in",
-                                       list(logable.index), format_func=_label)
-                if st.button("Log selected bets", type="primary", disabled=not picks):
-                    logged_sigs = st.session_state.setdefault("logged_sigs", set())
-                    n = skipped = 0
-                    for i in picks:
+                total_stake = edf["Stake $"].sum()
+                bets = int((edf["Stake $"] > 0).sum())
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Recommended bets", bets)
+                s2.metric("Total exposure", f"${total_stake:,.2f}")
+                s3.metric("of bankroll", f"{(total_stake / bankroll * 100) if bankroll else 0:.0f}%")
+                if n_longshots or n_toohigh:
+                    st.caption(f"🛡️ Hidden as likely model error: {n_longshots} long shots "
+                               f"(beyond +{max_odds}) and {n_toohigh} implausibly-high-EV plays "
+                               f"(over {max_ev}%). The board shows only what the model can be trusted on.")
+                if bankroll and total_stake > bankroll:
+                    st.warning("⚠️ These stakes assume each bet is sized on the *full* bankroll, but "
+                               "they're simultaneous — you can't risk more than you have. Treat the list "
+                               "as ranked candidates and pick a few; don't bet every row.", icon="⚠️")
+
+                show = edf.rename(columns={"ModelProb": "Model %", "ImpliedBest": "Impl %",
+                                           "NoVigMkt": "NoVig %", "EdgeVsMkt": "Edge", "Price": "Odds"})
+                cols = ["Player", "Team", "Market", "Side", "Line", "Proj", "Model %",
+                        "Book", "Odds", "EV%", "Stake $", "Stake %", "Game"]
+                show = show[[c for c in cols if c in show.columns]]
+                styler = (
+                    show.style
+                    .format({"Model %": "{:.1%}", "Proj": "{:.2f}", "Line": "{:.1f}",
+                             "EV%": "{:+.1f}", "Stake $": "${:.2f}", "Stake %": "{:.1%}"})
+                    .background_gradient(cmap="RdYlGn", subset=["EV%"])
+                    .background_gradient(cmap="Blues", subset=["Stake $"])
+                )
+                st.dataframe(styler, use_container_width=True, hide_index=True, height=520)
+                st.caption("Ranked by EV% at the best available price, long shots filtered out. Stake = "
+                           "fractional Kelly on your bankroll, capped. EV% = model_prob × decimal payout − 1.")
+
+                # --- Log straight to the proof layer (pre-filled, including Kelly stake) ----
+                st.markdown("**📒 Log a bet to your proof layer**")
+                logable = edf[edf["Stake $"] > 0] if "Stake $" in edf.columns else edf
+                if logable.empty:
+                    st.caption("No +EV bets to log at the current filter.")
+                else:
+                    def _label(i):
                         r = logable.loc[i]
-                        sig = (date_str, r["Player"], r["Market"], r["Side"],
-                               float(r["Line"]), int(r["Price"]))
-                        if sig in logged_sigs:
-                            skipped += 1
-                            continue
-                        B.add_bet(slate_date=date_str, game=r.get("Game"), player=r["Player"],
-                                  market=r["Market"], side=r["Side"], line=float(r["Line"]),
-                                  entry_odds=int(r["Price"]), model_prob=float(r["ModelProb"]),
-                                  stake=float(r.get("Stake $", 0) or 0), book=r.get("Book"))
-                        logged_sigs.add(sig)
-                        n += 1
-                    msg = f"Logged {n} bet(s) to the Bet Log — settle them there after the games."
-                    if skipped:
-                        msg += f" Skipped {skipped} already logged this session."
-                    st.success(msg)
+                        return (f"{r['Player']} · {r['Market']} {r['Side']} {float(r['Line']):g} "
+                                f"@ {int(r['Price']):+d}  (EV {r['EV%']:+.1f}%, ${r['Stake $']:.2f})")
+
+
+                    picks = st.multiselect("Pick the bets you placed — they log with the odds, model "
+                                           "probability, and Kelly stake already filled in",
+                                           list(logable.index), format_func=_label)
+                    if st.button("Log selected bets", type="primary", disabled=not picks):
+                        logged_sigs = st.session_state.setdefault("logged_sigs", set())
+                        n = skipped = 0
+                        for i in picks:
+                            r = logable.loc[i]
+                            sig = (date_str, r["Player"], r["Market"], r["Side"],
+                                   float(r["Line"]), int(r["Price"]))
+                            if sig in logged_sigs:
+                                skipped += 1
+                                continue
+                            B.add_bet(slate_date=date_str, game=r.get("Game"), player=r["Player"],
+                                      market=r["Market"], side=r["Side"], line=float(r["Line"]),
+                                      entry_odds=int(r["Price"]), model_prob=float(r["ModelProb"]),
+                                      stake=float(r.get("Stake $", 0) or 0), book=r.get("Book"))
+                            logged_sigs.add(sig)
+                            n += 1
+                        msg = f"Logged {n} bet(s) to the Bet Log — settle them there after the games."
+                        if skipped:
+                            msg += f" Skipped {skipped} already logged this session."
+                        st.success(msg)
         else:
             st.info("No edges to show (no props matched, or all below the EV filter).")
 
