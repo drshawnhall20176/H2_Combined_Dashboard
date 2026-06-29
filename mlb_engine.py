@@ -1,54 +1,54 @@
 """
 mlb_engine.py — shared data/analytics backend for the dashboard.
-
+ 
 Framework-agnostic (no Streamlit import). Pages wrap the expensive calls with
 @st.cache_data for caching/TTL. This module fixes the issues from the original pages:
-
+ 
   * one hydrated request per hitter (batSide + season stats together), not two
   * per-team lineup detection (posted batting order -> active roster fallback)
   * concurrent fetching so a full slate loads in a few seconds, not a minute
   * parameterized FIP constant, no dead imports, no bare excepts
-
+ 
 Data source: public MLB Stats API (statsapi.mlb.com), no key required.
 """
-
+ 
 from __future__ import annotations
-
+ 
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-
+ 
 import requests
-
+ 
 BASE = "https://statsapi.mlb.com/api/v1"
 TIMEOUT = 10
-
+ 
 # League FIP constant. It is season-specific (lgERA minus the FIP numerator over lgIP),
 # historically ~3.1-3.2. Override per season if you want exactness; see derive_fip_constant.
 FIP_CONSTANT_DEFAULT = 3.17
-
+ 
 # Expected plate appearances by batting-order spot (0 = leadoff). Mirrors projections.py.
 LINEUP_SPOT_PA = [4.65, 4.55, 4.45, 4.35, 4.25, 4.10, 4.00, 3.90, 3.80]
 DEFAULT_UNKNOWN_PA = 4.25
-
+ 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "h2-mlb-dashboard/1.0"})
-
-
+ 
+ 
 # --------------------------------------------------------------------- helpers
 def safe_float(val: Any, default: float = 0.0) -> float:
     try:
         return float(val)
     except (TypeError, ValueError):
         return default
-
-
+ 
+ 
 def strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", str(text))
                    if unicodedata.category(c) != "Mn")
-
-
+ 
+ 
 def fetch_json(url: str, params: Optional[Dict] = None, retries: int = 2) -> Dict[str, Any]:
     """GET JSON with a couple of retries. Returns {} on failure (never raises)."""
     for attempt in range(retries + 1):
@@ -59,8 +59,8 @@ def fetch_json(url: str, params: Optional[Dict] = None, retries: int = 2) -> Dic
         except requests.RequestException:
             pass
     return {}
-
-
+ 
+ 
 def parse_innings(ip_value: Any) -> float:
     """'85.1' -> 85.333 ('.1' = 1 out, '.2' = 2 outs)."""
     s = str(ip_value or "0")
@@ -68,8 +68,8 @@ def parse_innings(ip_value: Any) -> float:
         return safe_float(s)
     whole, frac = s.split(".", 1)
     return safe_float(whole) + {"0": 0, "1": 1, "2": 2}.get(frac[:1], 0) / 3.0
-
-
+ 
+ 
 # --------------------------------------------------------------------- analytics
 def calculate_fip(stat: Dict[str, Any], constant: float = FIP_CONSTANT_DEFAULT) -> float:
     """FIP = ((13*HR + 3*(BB+HBP) - 2*K) / IP) + constant."""
@@ -81,8 +81,8 @@ def calculate_fip(stat: Dict[str, Any], constant: float = FIP_CONSTANT_DEFAULT) 
     if ip <= 0:
         return 0.0
     return round(((13 * hr) + (3 * (bb + hbp)) - (2 * k)) / ip + constant, 2)
-
-
+ 
+ 
 def platoon_advantage(bat_hand: str, pit_hand: str) -> str:
     """Switch hitters always hold the platoon edge; otherwise opposite hands = advantage."""
     if bat_hand == "S":
@@ -90,19 +90,19 @@ def platoon_advantage(bat_hand: str, pit_hand: str) -> str:
     if not bat_hand or not pit_hand:
         return "Unknown"
     return "Advantage" if bat_hand != pit_hand else "Disadvantage"
-
-
+ 
+ 
 def power_index(iso: float, ops: float, advantage: str) -> float:
     """Transparent, sortable heuristic for the matchup leaderboards.
-
+ 
     NOT a probability. It rewards isolated power and overall OPS, with a small platoon
     nudge. Replace with the projection model (per-PA Monte Carlo) when you want real
     prop probabilities instead of a ranking score.
     """
     base = 100.0 * (iso + max(ops - 0.700, -0.3) / 2.0)
     return round(base + (5.0 if advantage == "Advantage" else 0.0), 1)
-
-
+ 
+ 
 # --------------------------------------------------------------------- fetchers
 @dataclass
 class PitcherMetrics:
@@ -116,11 +116,11 @@ class PitcherMetrics:
     oba: float = 0.0
     fip: float = 0.0
     stat: Dict[str, Any] = field(default_factory=dict)
-
-
+ 
+ 
 def _aggregate_pitching_splits(splits: list) -> Dict[str, Any]:
     """Sum multiple season splits (e.g. a traded pitcher's two stints) into one stat dict.
-
+ 
     Counting stats are summed; innings are summed as outs and rebuilt in MLB's '.1/.2'
     thirds format so the parsers stay correct; rate fields are recomputed."""
     sums = {k: 0.0 for k in ("strikeOuts", "baseOnBalls", "hitByPitch", "homeRuns",
@@ -132,7 +132,7 @@ def _aggregate_pitching_splits(splits: list) -> Dict[str, Any]:
         for k in sums:
             sums[k] += safe_float(s.get(k))
         total_outs += int(round(parse_innings(s.get("inningsPitched")) * 3))
-
+ 
     ip_float = total_outs / 3.0
     sums["inningsPitched"] = f"{total_outs // 3}.{total_outs % 3}"  # e.g. 85.1
     if ip_float > 0:
@@ -141,8 +141,8 @@ def _aggregate_pitching_splits(splits: list) -> Dict[str, Any]:
         sums["homeRunsPer9"] = sums["homeRuns"] / ip_float * 9
     sums["avg"] = (sums["hits"] / sums["atBats"]) if sums["atBats"] > 0 else 0.0
     return sums
-
-
+ 
+ 
 def get_pitcher_metrics(pitcher_id: Optional[int],
                         fip_constant: float = FIP_CONSTANT_DEFAULT) -> PitcherMetrics:
     if not pitcher_id:
@@ -158,7 +158,7 @@ def get_pitcher_metrics(pitcher_id: Optional[int],
     except (KeyError, IndexError):
         return PitcherMetrics(id=pitcher_id, name=data.get("people", [{}])[0].get("fullName", "TBD")
                               if data.get("people") else "TBD")
-
+ 
     so = safe_float(stat.get("strikeOuts"))
     ip = parse_innings(stat.get("inningsPitched"))
     return PitcherMetrics(
@@ -173,11 +173,11 @@ def get_pitcher_metrics(pitcher_id: Optional[int],
         fip=calculate_fip(stat, fip_constant),
         stat=stat,
     )
-
-
+ 
+ 
 def get_hitter_raw(player_id: int) -> Optional[Dict[str, Any]]:
     """name, bat hand, season hitting stat, and best-effort vs-LHP/vs-RHP splits.
-
+ 
     Self-contained: one combined call for season + splits, falling back to a season-only
     call so hitters ALWAYS load. Platoon splits are a bonus, never a requirement."""
     def parse(person: Dict[str, Any]):
@@ -194,7 +194,7 @@ def get_hitter_raw(player_id: int) -> Optional[Dict[str, Any]]:
                 elif code == "vr":
                     vs_r = stat
         return season, vs_l, vs_r
-
+ 
     data = fetch_json(
         f"{BASE}/people/{player_id}",
         {"hydrate": "stats(group=[hitting],type=[season,statSplits],sitCodes=[vl,vr])"},
@@ -203,14 +203,14 @@ def get_hitter_raw(player_id: int) -> Optional[Dict[str, Any]]:
     season = vs_l = vs_r = None
     if person:
         season, vs_l, vs_r = parse(person)
-
+ 
     if season is None:  # fallback: season-only (the original, reliable hydrate)
         data = fetch_json(f"{BASE}/people/{player_id}",
                           {"hydrate": "stats(group=[hitting],type=[season])"})
         person = (data.get("people") or [None])[0]
         if person:
             season, _, _ = parse(person)
-
+ 
     if person is None or season is None:
         return None
     return {
@@ -221,8 +221,8 @@ def get_hitter_raw(player_id: int) -> Optional[Dict[str, Any]]:
         "vs_l": vs_l,
         "vs_r": vs_r,
     }
-
-
+ 
+ 
 def get_schedule(date_str: str) -> List[Dict[str, Any]]:
     """Normalized game list with probable pitchers and venue."""
     sched = fetch_json(f"{BASE}/schedule",
@@ -247,11 +247,11 @@ def get_schedule(date_str: str) -> List[Dict[str, Any]]:
                 "away_pitcher_id": (away.get("probablePitcher") or {}).get("id"),
             })
     return sorted(games, key=lambda x: (x["away_name"], x["gameNumber"]))
-
-
+ 
+ 
 def _team_starters(game: Dict, team_key: str, box: Dict) -> Tuple[List[int], bool]:
     """Return (player_ids, projected). Posted batting order if available, else active roster.
-
+ 
     Decided PER TEAM (fixes the original home-only bug)."""
     order = []
     try:
@@ -260,19 +260,19 @@ def _team_starters(game: Dict, team_key: str, box: Dict) -> Tuple[List[int], boo
         order = []
     if order:
         return [int(p) for p in order][:9], False
-
+ 
     team_id = game[f"{team_key}_id"]
     roster = fetch_json(f"{BASE}/teams/{team_id}/roster/Active", {"hydrate": "person"}).get("roster", [])
     pids = [r["person"]["id"] for r in roster
             if r.get("position", {}).get("abbreviation") != "P" and r.get("person", {}).get("id")]
     return pids, True
-
-
+ 
+ 
 # --------------------------------------------------------------------- orchestration
 def build_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAULT,
                 max_workers: int = 8) -> Tuple[List[Dict], List[Dict]]:
     """Fetch and assemble the full slate concurrently.
-
+ 
     Returns (hitter_rows, game_meta):
       hitter_rows : list of flat dicts ready for a DataFrame (one per hitter)
       game_meta   : list of per-game dicts (label, venue, both PitcherMetrics, names)
@@ -280,7 +280,7 @@ def build_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAULT,
     games = [g for g in get_schedule(date_str) if g.get("gamePk")]
     if not games:
         return [], []
-
+ 
     # Phase 1 — per-game setup (pitcher metrics + boxscore + starters) in parallel.
     def setup_game(game: Dict) -> Dict:
         gid = game["gamePk"]
@@ -300,16 +300,16 @@ def build_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAULT,
                 "projected": projected,
             })
         return {"game": game, "label": label, "home_pm": home_pm, "away_pm": away_pm, "sides": sides}
-
+ 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         setups = list(ex.map(setup_game, games))
-
+ 
     # Phase 2 — fetch every unique hitter ONCE, concurrently.
     unique_pids = {pid for s in setups for side in s["sides"] for pid in side["pids"]}
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         raws = list(ex.map(get_hitter_raw, unique_pids))
     raw_by_id = {r["id"]: r for r in raws if r}
-
+ 
     # Phase 3 — assemble rows + meta (pure, no network).
     rows: List[Dict] = []
     meta: List[Dict] = []
@@ -334,12 +334,12 @@ def build_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAULT,
                 rows.append(_hitter_row(raw, opp, side["team_name"], s["label"],
                                         side["projected"], idx, s["game"].get("venue_id")))
     return rows, meta
-
-
+ 
+ 
 def build_pitching_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAULT,
                          max_workers: int = 8) -> List[Dict]:
     """Lightweight: probable starters across the slate with ERA/FIP/peripherals.
-
+ 
     Does NOT fetch hitters or boxscores, so it is much cheaper than build_slate.
     Returns one row per probable starter, including Delta = ERA - FIP (positive =
     underlying performance better than results = positive-regression candidate)."""
@@ -349,15 +349,15 @@ def build_pitching_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAU
         label = f"{g['away_name']} @ {g['home_name']}"
         tasks.append((g["home_pitcher_id"], g["home_name"], g["away_name"], label))
         tasks.append((g["away_pitcher_id"], g["away_name"], g["home_name"], label))
-
+ 
     def fetch(t):
         pid, team, opp, label = t
         pm = get_pitcher_metrics(pid, fip_constant)
         return pm, team, opp, label
-
+ 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         results = list(ex.map(fetch, tasks))
-
+ 
     rows = []
     for pm, team, opp, label in results:
         if pm.id is None or pm.era == 0:
@@ -368,8 +368,8 @@ def build_pitching_slate(date_str: str, fip_constant: float = FIP_CONSTANT_DEFAU
             "K/9": round(pm.k9, 1), "WHIP": round(pm.whip, 2), "HR/9": round(pm.hr9, 2), "OBA": pm.oba,
         })
     return rows
-
-
+ 
+ 
 def _hitter_row(raw: Dict, opp: PitcherMetrics, team_name: str,
                 game_label: str, projected: bool, lineup_idx: int = 0,
                 venue_id: int = None) -> Dict:
@@ -390,6 +390,7 @@ def _hitter_row(raw: Dict, opp: PitcherMetrics, team_name: str,
         "Hand": raw["bat_hand"],
         "Opp Pitcher": opp.name,
         "Opp Hand": opp.hand,
+        "Opp HR/9": round(opp.hr9, 2),
         "Advantage": adv,
         "Lineup": "Projected" if projected else "Confirmed",
         "HR": safe_float(stat.get("homeRuns")),
@@ -410,3 +411,62 @@ def _hitter_row(raw: Dict, opp: PitcherMetrics, team_name: str,
         "_opp_stat": opp.stat,                       # opposing pitcher's season line (matchup)
         "_split_stat": (raw.get("vs_l") if opp.hand == "L" else raw.get("vs_r")),  # platoon split
     }
+ 
+ 
+# ---- actual results (for the retrospective) --------------------------------
+def _ip_to_outs(ip) -> int:
+    """Innings pitched string ('6.1') -> outs (19). '.1'/'.2' are 1/2 outs, not tenths."""
+    try:
+        whole, _, frac = str(ip).partition(".")
+        return int(whole or 0) * 3 + (int(frac) if frac in ("1", "2") else 0)
+    except (ValueError, TypeError):
+        return 0
+ 
+ 
+def _parse_boxscore_results(box: Dict) -> Dict[int, Dict]:
+    """Per-player actuals from one boxscore, keyed by player id.
+ 
+    Batting: hr, hits, tb, so. Pitching: p_k, p_outs, p_bb. (A player may have both.)"""
+    out: Dict[int, Dict] = {}
+    for side in ("home", "away"):
+        players = (((box.get("teams", {}) or {}).get(side, {}) or {}).get("players", {}) or {})
+        for pdata in players.values():
+            pid = ((pdata.get("person", {}) or {}).get("id"))
+            if pid is None:
+                continue
+            name = (pdata.get("person", {}) or {}).get("fullName", "")
+            stats = pdata.get("stats", {}) or {}
+            rec = out.setdefault(int(pid), {"name": name})
+ 
+            bat = stats.get("batting", {}) or {}
+            if bat:
+                h = int(bat.get("hits", 0) or 0)
+                d = int(bat.get("doubles", 0) or 0)
+                t = int(bat.get("triples", 0) or 0)
+                hr = int(bat.get("homeRuns", 0) or 0)
+                singles = max(h - d - t - hr, 0)
+                rec.update(hr=hr, hits=h, tb=singles + 2 * d + 3 * t + 4 * hr,
+                           so=int(bat.get("strikeOuts", 0) or 0))
+ 
+            pit = stats.get("pitching", {}) or {}
+            if pit:
+                rec.update(p_k=int(pit.get("strikeOuts", 0) or 0),
+                           p_bb=int(pit.get("baseOnBalls", 0) or 0),
+                           p_outs=_ip_to_outs(pit.get("inningsPitched", "0.0")))
+    return out
+ 
+ 
+def get_player_results(date_str: str) -> Dict[int, Dict]:
+    """Actual per-player results for all FINAL games on a date, keyed by player id.
+    Empty for dates with no completed games."""
+    results: Dict[int, Dict] = {}
+    for g in get_schedule(date_str):
+        if "final" not in (g.get("status", "") or "").lower():
+            continue
+        try:
+            box = fetch_json(f"{BASE}/game/{g['gamePk']}/boxscore")
+        except Exception:
+            continue
+        for pid, rec in _parse_boxscore_results(box).items():
+            results.setdefault(pid, {}).update(rec)
+    return results
