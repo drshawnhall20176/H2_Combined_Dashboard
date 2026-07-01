@@ -17,6 +17,7 @@ from __future__ import annotations
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
  
 import requests
@@ -116,6 +117,8 @@ class PitcherMetrics:
     oba: float = 0.0
     fip: float = 0.0
     stat: Dict[str, Any] = field(default_factory=dict)
+    has_stats: bool = True     # False when no season line could be found at all
+    stale: bool = False        # True when we fell back to a PRIOR season's line
  
  
 def _aggregate_pitching_splits(splits: list) -> Dict[str, Any]:
@@ -147,17 +150,36 @@ def get_pitcher_metrics(pitcher_id: Optional[int],
                         fip_constant: float = FIP_CONSTANT_DEFAULT) -> PitcherMetrics:
     if not pitcher_id:
         return PitcherMetrics(id=None)
-    data = fetch_json(f"{BASE}/people/{pitcher_id}",
-                      {"hydrate": "stats(group=[pitching],type=[season])"})
-    try:
-        person = data["people"][0]
-        splits = person["stats"][0]["splits"]
-        if not splits:
-            raise IndexError
-        stat = _aggregate_pitching_splits(splits)  # handles 1 or many splits
-    except (KeyError, IndexError):
-        return PitcherMetrics(id=pitcher_id, name=data.get("people", [{}])[0].get("fullName", "TBD")
-                              if data.get("people") else "TBD")
+ 
+    def _fetch_season_stat(season: Optional[int]):
+        params = {"hydrate": "stats(group=[pitching],type=[season]"
+                             + (f",season={season}" if season else "") + ")"}
+        data = fetch_json(f"{BASE}/people/{pitcher_id}", params)
+        try:
+            person = data["people"][0]
+            splits = person["stats"][0]["splits"]
+            if not splits:
+                return person, None
+            return person, _aggregate_pitching_splits(splits)
+        except (KeyError, IndexError):
+            return (data.get("people", [{}]) or [{}])[0], None
+ 
+    # Try current season; if the line is empty (IL returnee, call-up, below threshold),
+    # fall back to last season's real numbers rather than reporting a misleading 0.00.
+    person, stat = _fetch_season_stat(None)
+    stale = False
+    if stat is None:
+        prior = datetime.now().year - 1
+        person2, stat2 = _fetch_season_stat(prior)
+        if stat2 is not None:
+            person, stat, stale = person2, stat2, True
+ 
+    if stat is None:
+        # Genuinely no data anywhere — flag it so the UI shows "no data", not a fake-elite 0.00.
+        return PitcherMetrics(id=pitcher_id,
+                              name=(person or {}).get("fullName", "TBD"),
+                              hand=(person or {}).get("pitchHand", {}).get("code", "R"),
+                              has_stats=False)
  
     so = safe_float(stat.get("strikeOuts"))
     ip = parse_innings(stat.get("inningsPitched"))
@@ -172,6 +194,7 @@ def get_pitcher_metrics(pitcher_id: Optional[int],
         oba=safe_float(stat.get("avg")),
         fip=calculate_fip(stat, fip_constant),
         stat=stat,
+        stale=stale,
     )
  
  
@@ -390,7 +413,7 @@ def _hitter_row(raw: Dict, opp: PitcherMetrics, team_name: str,
         "Hand": raw["bat_hand"],
         "Opp Pitcher": opp.name,
         "Opp Hand": opp.hand,
-        "Opp HR/9": round(opp.hr9, 2),
+        "Opp HR/9": (round(opp.hr9, 2) if opp.has_stats else float("nan")),
         "Advantage": adv,
         "Lineup": "Projected" if projected else "Confirmed",
         "HR": safe_float(stat.get("homeRuns")),
