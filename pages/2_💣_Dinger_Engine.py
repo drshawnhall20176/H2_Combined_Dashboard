@@ -99,6 +99,8 @@ def hr9_band(v):
         x = float(v)
     except (TypeError, ValueError):
         return ""
+    if x != x:          # NaN (opposing pitcher has no season line) -> no color
+        return ""
     if x < 0.8:
         return "background-color:#1a9850;color:white"   # excellent (elite arm)
     if x < 1.1:
@@ -117,7 +119,7 @@ def style_hitters(data: pd.DataFrame):
     fmt = {"HR": "{:.0f}", "TB": "{:.0f}", "SLG": "{:.3f}", "OPS": "{:.3f}",
            "ISO": "{:.3f}", "PowerIndex": "{:.1f}", "Opp HR/9": "{:.2f}"}
     fmt.update({c: "{:.1%}" for c in pct})
-    styler = view.style.format(fmt)
+    styler = view.style.format(fmt, na_rep="—")
     grad_up = [c for c in ("HR%", "Hit%", "TB1.5%", "HR", "TB", "SLG", "OPS", "ISO", "PowerIndex") if c in view.columns]
     if grad_up:
         styler = styler.background_gradient(cmap="RdYlGn", subset=grad_up)
